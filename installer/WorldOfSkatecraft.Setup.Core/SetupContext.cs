@@ -113,16 +113,13 @@ public sealed class SetupContext
     internal void EnterStep(string stepId) => _stepId = stepId;
 
     /// <summary>
-    /// Runs a program and says so first. A dry run prints the command and reports success, so a
-    /// whole plan can be walked on a machine that has none of the programs.
+    /// Runs a program and says so first. In a dry run the injected runner records the command and
+    /// answers as a success instead of executing it, so a whole plan can be walked — and its
+    /// commands printed — on a machine that has none of the programs.
     /// </summary>
     public async Task<CommandResult> Run(CommandSpec spec, string? outputPrefix = null)
     {
         Log.Command(spec, DryRun);
-        if (DryRun)
-        {
-            return CommandResult.Success();
-        }
         var result = await Runner
             .RunAsync(spec, line => Report(null, outputPrefix is null ? line : $"{outputPrefix} {line}"), Cancellation)
             .ConfigureAwait(false);
@@ -142,15 +139,9 @@ public sealed class SetupContext
     public Task<CommandResult> Capture(string file, params string[] arguments) =>
         Capture(new CommandSpec(file, arguments));
 
-    /// <summary>Runs a program for a small answer; a dry run assumes it succeeded with no output.</summary>
-    public async Task<CommandResult> Capture(CommandSpec spec)
-    {
-        if (DryRun)
-        {
-            return CommandResult.Success();
-        }
-        return await Runner.RunAsync(spec, null, Cancellation).ConfigureAwait(false);
-    }
+    /// <summary>Runs a program for a small answer.</summary>
+    public Task<CommandResult> Capture(CommandSpec spec) =>
+        Runner.RunAsync(spec, null, Cancellation);
 
     /// <summary>
     /// The environment a child gets: the folders setup found tools in, in front of the machine's
@@ -161,7 +152,10 @@ public sealed class SetupContext
         get
         {
             var path = Tools.ChildPath(Host.GetEnvironment("PATH"));
-            return new Dictionary<string, string> { ["PATH"] = path };
+            // An empty PATH would be a child with no search path at all, which is worse than none.
+            return path.Length == 0
+                ? new Dictionary<string, string>()
+                : new Dictionary<string, string> { ["PATH"] = path };
         }
     }
 

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A headless driver for the same engine the Windows shell runs: it walks the plan on any
+       machine with fake inputs, which is how the plan, its commands and its idempotence are checked
+       without Windows, Docker or either game. It is also usable on Windows for scripting. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>WorldOfSkatecraft.Setup.Cli</RootNamespace>
+    <AssemblyName>wosc-setup</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WorldOfSkatecraft.Setup.Core\WorldOfSkatecraft.Setup.Core.csproj" />
+  </ItemGroup>
+
+</Project>

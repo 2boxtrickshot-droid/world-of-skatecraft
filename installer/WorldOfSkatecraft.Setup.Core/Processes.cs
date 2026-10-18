@@ -153,21 +153,30 @@ public sealed class ProcessRunner : IProcessRunner
 public sealed class RecordingProcessRunner : IProcessRunner
 {
     private readonly List<CommandSpec> _commands = new();
-    private readonly List<(Func<CommandSpec, bool> Match, CommandResult Result)> _answers = new();
+    private readonly List<Func<CommandSpec, CommandResult?>> _answers = new();
+    private readonly List<(Func<CommandSpec, bool> Match, Action<CommandSpec> Effect)> _effects = new();
 
     /// <summary>Every command handed to it, in order.</summary>
     public IReadOnlyList<CommandSpec> Commands => _commands;
 
-    /// <summary>Answers a command needs: the first matching rule wins, and no rule means success.</summary>
+    /// <summary>Answers a command needs: the first rule that answers wins, and none answers success.</summary>
     public void Answer(Func<CommandSpec, bool> match, CommandResult result) =>
-        _answers.Add((match, result));
+        Answer(spec => match(spec) ? result : null);
+
+    /// <summary>Answers a command needs: the first rule that answers wins, and none answers success.</summary>
+    public void Answer(Func<CommandSpec, CommandResult?> answer) => _answers.Add(answer);
+
+    /// <summary>
+    /// What a command *does*, for a rehearsal: the file a converter writes, the binary a build
+    /// produces. Registering an effect is how a plan can be walked on a machine that cannot run the
+    /// commands at all.
+    /// </summary>
+    public void OnCommand(Func<CommandSpec, bool> match, Action<CommandSpec> effect) =>
+        _effects.Add((match, effect));
 
     /// <summary>Answers every command whose file and arguments contain all the given words.</summary>
-    public void Answer(string stdout, params string[] words) =>
-        Answer(
-            spec => words.All(w => spec.File.Contains(w, StringComparison.OrdinalIgnoreCase)
-                                   || spec.Arguments.Any(a => a.Contains(w, StringComparison.OrdinalIgnoreCase))),
-            CommandResult.Success(stdout));
+    public void AnswerWith(Func<CommandSpec, bool> match, string stdout) =>
+        Answer(match, CommandResult.Success(stdout));
 
     public Task<CommandResult> RunAsync(
         CommandSpec spec,
@@ -176,9 +185,12 @@ public sealed class RecordingProcessRunner : IProcessRunner
     {
         _commands.Add(spec);
         var result = _answers
-            .Where(a => a.Match(spec))
-            .Select(a => a.Result)
-            .FirstOrDefault() ?? CommandResult.Success();
+            .Select(answer => answer(spec))
+            .FirstOrDefault(answer => answer is not null) ?? CommandResult.Success();
+        foreach (var (match, effect) in _effects.Where(e => e.Match(spec)))
+        {
+            effect(spec);
+        }
         foreach (var line in result.Output.Split('\n'))
         {
             onLine?.Invoke(line);

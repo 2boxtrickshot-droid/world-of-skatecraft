@@ -401,9 +401,13 @@ public static class SetupPlan
                     $"Check your connection, then run setup again (it fetches {Upstreams.VgmstreamUrl}).");
             }
             ctx.ExtractZip(archive, ctx.Paths.Vgmstream);
+            // vgmstream-cli has to be findable by name: the sounds script calls it.
+            ctx.ChildEnvironment.TryGetValue("PATH", out var inherited);
             var environment = new Dictionary<string, string>(ctx.ChildEnvironment)
             {
-                ["PATH"] = ctx.Paths.Vgmstream + Path.PathSeparator + ctx.ChildEnvironment["PATH"],
+                ["PATH"] = inherited is null or ""
+                    ? ctx.Paths.Vgmstream
+                    : ctx.Paths.Vgmstream + Path.PathSeparator + inherited,
             };
             var run = await ctx.Run(new CommandSpec(
                 ctx.Paths.VenvPython,
@@ -590,10 +594,6 @@ public static class SetupPlan
         var patched = PatchedImage(ctx);
         var usePatched = patched is not null
                          && await ctx.Docker.HasImageAsync(patched, ctx.Cancellation).ConfigureAwait(false);
-        if (ctx.DryRun)
-        {
-            usePatched = ctx.State.BuildPatchedServer;
-        }
         var image = usePatched ? patched! : Upstreams.ServerImage;
         ComposeWriter.Write(ctx.Paths, image, Upstreams.DatabaseImage, ctx.TimeZone);
         ctx.Say(usePatched
@@ -622,9 +622,9 @@ public static class SetupPlan
         "Server images",
         "Downloads the server's container images by digest, so a later upstream release cannot " +
         "change what this install runs.",
-        IsDone: async ctx => ctx.DryRun
-            || (await ctx.Docker.HasImageAsync(Upstreams.DatabaseImage, ctx.Cancellation).ConfigureAwait(false)
-                && await ctx.Docker.HasImageAsync(Upstreams.ServerImage, ctx.Cancellation).ConfigureAwait(false)),
+        IsDone: async ctx =>
+            await ctx.Docker.HasImageAsync(Upstreams.DatabaseImage, ctx.Cancellation).ConfigureAwait(false)
+            && await ctx.Docker.HasImageAsync(Upstreams.ServerImage, ctx.Cancellation).ConfigureAwait(false),
         Run: async ctx =>
         {
             foreach (var image in new[] { Upstreams.DatabaseImage, Upstreams.ServerImage })
@@ -730,8 +730,7 @@ public static class SetupPlan
                 return false;
             }
             return ComposeWriter.ServerImageOf(File.ReadAllText(ctx.Paths.ComposeFile)) == image
-                   && (ctx.DryRun
-                       || await ctx.Docker.HasImageAsync(image, ctx.Cancellation).ConfigureAwait(false));
+                   && await ctx.Docker.HasImageAsync(image, ctx.Cancellation).ConfigureAwait(false);
         },
         Run: async ctx =>
         {
@@ -846,8 +845,8 @@ public static class SetupPlan
         SetupPhase.Server,
         "Start the server",
         "Starts the server's three containers and waits until the world server reports healthy.",
-        IsDone: async ctx => ctx.DryRun
-            || await ctx.Docker.HealthAsync("mangosd", ctx.Cancellation).ConfigureAwait(false) == "healthy",
+        IsDone: async ctx =>
+            await ctx.Docker.HealthAsync("mangosd", ctx.Cancellation).ConfigureAwait(false) == "healthy",
         Run: async ctx =>
         {
             if (!File.Exists(ctx.Paths.ComposeFile))
@@ -900,9 +899,9 @@ public static class SetupPlan
         "Creates your game account on the server, with GM rights so chat commands like .tele work.",
         IsDone: async ctx =>
         {
-            if (ctx.State.Account.Length == 0 || ctx.DryRun)
+            if (ctx.State.Account.Length == 0)
             {
-                return ctx.State.Account.Length > 0;
+                return false;
             }
             var row = await ctx.Capture(WorldOfSkatecraft.Setup.Core.Account.DatabaseCommand(
                 ctx.Docker,
