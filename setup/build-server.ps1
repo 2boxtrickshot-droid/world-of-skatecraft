@@ -64,6 +64,8 @@ if (-not (Test-Native { docker image inspect $Image })) {
         $text = [IO.File]::ReadAllText((Join-Path $Context 'docker\server\Dockerfile'), [Text.Encoding]::UTF8)
         $text = $text.Replace('make -j"$(nproc)"', "make -j$Jobs")
         [IO.File]::WriteAllText($Dockerfile, $text, (New-Object Text.UTF8Encoding($false)))
+        # vmangos-deploy's server Dockerfile uses BuildKit-only instructions (COPY --chmod, --exclude).
+        $env:DOCKER_BUILDKIT = '1'
         Invoke-Native 'the server build' {
             docker build -t $Image -f $Dockerfile `
                 --build-arg "VMANGOS_REVISION=$VmangosRev" `
@@ -78,10 +80,11 @@ if (-not (Test-Native { docker image inspect $Image })) {
 }
 
 # Targeted replace on the raw bytes: line endings and everything else in the file stay as they are.
+# Only an `image:` line changes: a commented example and the line's indentation stay as they are.
 $compose = $Latin1.GetString([IO.File]::ReadAllBytes($ComposeFile))
-$pattern = 'image: (ghcr\.io/mserajnik/vmangos-server:5875|world-of-skatecraft/vmangos-server:\S+)'
+$pattern = '(?m)^([ 	]*image:[ 	]*(?:&[A-Za-z0-9_.-]+[ 	]+)?)(?:ghcr\.io/mserajnik/vmangos-server[:@][^\s]+|world-of-skatecraft/vmangos-server:[^\s]+)'
 if ($compose -notmatch $pattern) { Stop-Build "no vmangos-server image: line found in $ComposeFile" }
-$updated = [regex]::Replace($compose, $pattern, "image: $Image")
+$updated = [regex]::Replace($compose, $pattern, { param($m) "$($m.Groups[1].Value)$Image" })
 if ($updated -ne $compose) { [IO.File]::WriteAllBytes($ComposeFile, $Latin1.GetBytes($updated)) }
 Write-Host "$ComposeFile now runs $Image"
 exit 0
