@@ -1,0 +1,3 @@
+# Build output of the installer's own projects.
+bin/
+obj/

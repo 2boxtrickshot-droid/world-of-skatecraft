@@ -1,0 +1,19 @@
+<Project>
+
+  <!-- Shared properties for the Windows installer's projects. `EnableWindowsTargeting` lets the
+       Windows-only shell project be built and published from Linux/macOS, which is how the
+       package's Setup.exe is produced and checked in CI. -->
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <Product>World of Skatecraft Setup</Product>
+    <Company>World of Skatecraft contributors</Company>
+    <Copyright>MIT OR Apache-2.0, see the repository's LICENSE-MIT, LICENSE-APACHE and NOTICE</Copyright>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+</Project>

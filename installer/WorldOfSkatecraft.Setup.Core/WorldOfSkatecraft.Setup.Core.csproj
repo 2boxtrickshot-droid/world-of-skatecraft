@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The engine: every setup step, its validation and its state, with no Windows API in it, so
+       it runs and is tested on the build machine as well as in the Windows shell. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>WorldOfSkatecraft.Setup.Core</RootNamespace>
+    <AssemblyName>WorldOfSkatecraft.Setup.Core</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The v1 example Compose file's service bodies, embedded so compose.yaml is generated from
+         a copy that is versioned with this code rather than parsed out of a checkout. -->
+    <EmbeddedResource Include="Templates\compose.yaml" LogicalName="compose.yaml" />
+  </ItemGroup>
+
+</Project>
