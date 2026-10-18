@@ -26,8 +26,13 @@ $EngineRev = 'cb79689'
 $ConverterUrl = 'https://raw.githubusercontent.com/Kimmo3223/2010-rust-rewrite-mashup/adb684e78ec07654f00e2a9da88d32ae02cc68bd/skate/converter/iw4l_skate_convert.py'
 $VgmstreamUrl = 'https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip'
 $ServerUrl = 'https://github.com/mserajnik/vmangos-deploy'
-$ServerRev = 'f0692574b7955e78d68fea39372e0045360ce5ee'
-$ServerImage = 'ghcr.io/mserajnik/vmangos-server:5875'
+# vmangos-deploy relaunched as version 1 on 2026-10-04: every image checks VMANGOS_DEPLOY_VERSION
+# at startup, so the checkout and the images are pinned to the same version -- this revision, and
+# both images by digest, because their tags follow whatever the deploy repository is at. A floating
+# tag and an old checkout is what stopped every fresh install at the map extraction.
+$ServerRev = 'e9ba3fad0161ff277d5adfbc5b66e6b8114cb18b'
+$ServerImage = 'ghcr.io/mserajnik/vmangos-server@sha256:ad631ae8c71b648114b67ad9ef716f74f8d43e9662bc0fe087c5e3d276acc717'
+$DatabaseImage = 'ghcr.io/mserajnik/vmangos-database@sha256:a2f889c73e313dc5a124468d325ab71a238fe61a285b4e882e310197d8d6efea'
 if (-not $env:SKATECRAFT_SERVER_PROJECT) { $env:SKATECRAFT_SERVER_PROJECT = 'world-of-skatecraft' }
 
 function Step($text) { Write-Host ''; Write-Host "==> $text" -ForegroundColor Cyan }
@@ -68,6 +73,8 @@ function Test-Machine {
         'winget install -e --id Python.Python.3.12   (if "python" opens the Microsoft Store, turn off its App execution alias in Settings)'
     Check 'Docker Desktop' ([bool](Get-Command docker -ErrorAction SilentlyContinue)) 'winget install -e --id Docker.DockerDesktop   (then restart Windows)'
     Check 'Docker compose' (Test-Native { docker compose version }) 'update Docker Desktop'
+    # vmangos-deploy's server Dockerfile uses BuildKit-only instructions (COPY --chmod, --exclude).
+    Check 'Docker buildx' (Test-Native { docker buildx version }) 'update Docker Desktop'
     Check 'Docker Desktop running' (Test-Native { docker info }) 'start Docker Desktop and wait until it says it is running'
     $drive = (Split-Path -Qualifier $Root).TrimEnd(':')
     $free = [math]::Floor((Get-PSDrive $drive).Free / 1GB)
@@ -168,26 +175,50 @@ if (-not (Test-Path (Join-Path $Root 'skate-audio\pop_1.wav'))) {
 $Server = Join-Path $Root 'server'
 $Compose = Join-Path $Server 'compose.yaml'
 function Invoke-Compose { & docker compose -p $env:SKATECRAFT_SERVER_PROJECT --project-directory $Server -f $Compose @args }
-if (-not (Test-Path $Compose)) {
+if (-not (Test-Path $Compose) -or -not (Select-String -Path $Compose -SimpleMatch 'VMANGOS_DEPLOY_VERSION' -Quiet)) {
     Step 'Setting up the local vmangos server'
+    if (Test-Path $Compose) {
+        # A server from before vmangos-deploy's version 1: the same database volume and map folder,
+        # so characters and the hours of extraction carry over; only the checkout and the Compose
+        # file are replaced.
+        Invoke-Compose down *> $null
+        Move-Item $Compose "$Compose.pre-v1" -Force
+        Write-Host '  updating the server setup to vmangos-deploy version 1 (old file: server\compose.yaml.pre-v1)'
+    }
     if (-not (Test-Path (Join-Path $Server '.git'))) { Invoke-Native 'cloning vmangos-deploy' { git clone --quiet $ServerUrl $Server } }
-    Invoke-Native 'checking out vmangos-deploy' { git -C $Server checkout --quiet $ServerRev }
+    # vmangos-deploy rewrote its history on 2026-10-04, so an older clone needs a fetch and a reset.
+    Invoke-Native 'fetching vmangos-deploy' { git -C $Server fetch --quiet origin }
+    Invoke-Native 'updating vmangos-deploy' { git -C $Server reset --quiet --hard $ServerRev }
     Copy-Item (Join-Path $Server 'config\mangosd.conf.example') (Join-Path $Server 'config\mangosd.conf')
     Copy-Item (Join-Path $Server 'config\realmd.conf.example') (Join-Path $Server 'config\realmd.conf')
-    # The example's `user:` lines only matter on Linux hosts; its time zone stays UTC.
-    Copy-Item (Join-Path $Server 'compose.yaml.example') $Compose
+    # The images are pinned by digest here, so a later upstream release cannot change what this
+    # install runs. The containers' own 1000:1000 user is the one Docker Desktop maps files to.
+    $example = [IO.File]::ReadAllText((Join-Path $Server 'compose.yaml.example'), [Text.Encoding]::UTF8)
+    $example = $example.Replace('image: ghcr.io/mserajnik/vmangos-database', "image: $DatabaseImage")
+    $example = $example.Replace('ghcr.io/mserajnik/vmangos-server:5875', $ServerImage)
+    [IO.File]::WriteAllText($Compose, $example, (New-Object Text.UTF8Encoding($false)))
 }
 if (-not (Test-Path (Join-Path $Server 'storage\mangosd\extracted-data\maps'))) {
     Step 'Extracting server maps from your WoW client (this takes HOURS; leave it running)'
-    Invoke-Native 'pulling the server images' { Invoke-Compose pull --quiet }
     $WowDir = (Get-Item $WowLink).Target | Select-Object -First 1
     if (-not $WowDir) { $WowDir = (Get-Content (Join-Path $State 'wow-path') -Raw).Trim() }
+    $Scratch = Join-Path $Server 'storage\mangosd\client-data'
     $Extracted = Join-Path $Server 'storage\mangosd\extracted-data'
+    New-Item -ItemType Directory -Force -Path $Scratch, $Extracted | Out-Null
+    Invoke-Native 'pulling the server image' { docker pull --quiet $ServerImage }
+    # The extractors write beside the client's Data, so they get a scratch folder holding it
+    # read-only rather than the WoW folder itself: nothing in your install is ever written to.
     Invoke-Native 'map extraction' {
-        docker run --rm -v "${WowDir}:/opt/vmangos/storage/client-data" `
-            -v "${Extracted}:/opt/vmangos/storage/extracted-data" $ServerImage extract-client-data
+        docker run --rm -e VMANGOS_DEPLOY_VERSION=1 -e VMANGOS_UID=1000 -e VMANGOS_GID=1000 `
+            -v "${Scratch}:/opt/vmangos/storage/client-data" `
+            -v "${WowDir}\Data:/opt/vmangos/storage/client-data/Data:ro" `
+            -v "${Extracted}:/opt/vmangos/storage/data" `
+            --entrypoint extract-client-data $ServerImage --force
     }
 }
+Step 'Building the server with the Skateboarding profession (a few minutes)'
+Invoke-Native 'the server build' { & (Join-Path $PSScriptRoot 'build-server.ps1') -Deploy $Server }
+
 Step 'Starting the server'
 Invoke-Native 'starting the server' { Invoke-Compose up -d }
 Write-Host -NoNewline '  waiting for the world server'

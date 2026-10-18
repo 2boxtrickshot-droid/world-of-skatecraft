@@ -2,3 +2,8 @@
 *.sh text eol=lf
 *.ps1 text eol=crlf
 *.bat text eol=crlf
+# The vmangos patch is applied by git *inside a Linux container*, and the deploy project's
+# Dockerfile is read there too: a CRLF checkout makes the patch fail to apply, which leaves the
+# stock server (and no Skateboarding profession) behind.
+*.patch    text eol=lf
+Dockerfile text eol=lf

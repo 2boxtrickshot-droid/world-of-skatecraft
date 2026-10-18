@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The engine's tests: they run on the machine that builds the installer (Linux, in CI), which
+       is the point of keeping Windows out of the engine. Each one names the fact it checks. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>WorldOfSkatecraft.Setup.Tests</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- The test host ships satellite resources for locales .NET does not know when globalization
+         is invariant; a build machine does not care, and the noise hides real warnings. -->
+    <NoWarn>$(NoWarn);NETSDK1188</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WorldOfSkatecraft.Setup.Core\WorldOfSkatecraft.Setup.Core.csproj" />
+  </ItemGroup>
+
+</Project>
