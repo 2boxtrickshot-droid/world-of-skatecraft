@@ -26,7 +26,7 @@ $EngineRev = 'cb79689'
 $ConverterUrl = 'https://raw.githubusercontent.com/Kimmo3223/2010-rust-rewrite-mashup/adb684e78ec07654f00e2a9da88d32ae02cc68bd/skate/converter/iw4l_skate_convert.py'
 $VgmstreamUrl = 'https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip'
 $ServerUrl = 'https://github.com/mserajnik/vmangos-deploy'
-$ServerRev = 'f0692574b7955e78d68fea39372e0045360ce5ee'
+$ServerRev = '02c6608fcf350e1a85ebd319e9307bc763db2ba6'
 $ServerImage = 'ghcr.io/mserajnik/vmangos-server:5875'
 if (-not $env:SKATECRAFT_SERVER_PROJECT) { $env:SKATECRAFT_SERVER_PROJECT = 'world-of-skatecraft' }
 
@@ -174,7 +174,7 @@ if (-not (Test-Path $Compose)) {
     Invoke-Native 'checking out vmangos-deploy' { git -C $Server checkout --quiet $ServerRev }
     Copy-Item (Join-Path $Server 'config\mangosd.conf.example') (Join-Path $Server 'config\mangosd.conf')
     Copy-Item (Join-Path $Server 'config\realmd.conf.example') (Join-Path $Server 'config\realmd.conf')
-    # The example's `user:` lines only matter on Linux hosts; its time zone stays UTC.
+    # The example's VMANGOS_UID/GID only matter on Linux hosts; its time zone stays UTC.
     Copy-Item (Join-Path $Server 'compose.yaml.example') $Compose
 }
 if (-not (Test-Path (Join-Path $Server 'storage\mangosd\extracted-data\maps'))) {
@@ -185,7 +185,8 @@ if (-not (Test-Path (Join-Path $Server 'storage\mangosd\extracted-data\maps'))) 
     $Extracted = Join-Path $Server 'storage\mangosd\extracted-data'
     Invoke-Native 'map extraction' {
         docker run --rm -v "${WowDir}:/opt/vmangos/storage/client-data" `
-            -v "${Extracted}:/opt/vmangos/storage/extracted-data" $ServerImage extract-client-data
+            -e VMANGOS_DEPLOY_VERSION=1 `
+            -v "${Extracted}:/opt/vmangos/storage/data" $ServerImage extract-client-data --force
     }
 }
 Step 'Building the server with the Skateboarding profession (a few minutes)'

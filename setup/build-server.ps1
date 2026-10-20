@@ -78,9 +78,9 @@ if (-not (Test-Native { docker image inspect $Image })) {
 
 # Targeted replace on the raw bytes: line endings and everything else in the file stay as they are.
 $compose = $Latin1.GetString([IO.File]::ReadAllBytes($ComposeFile))
-$pattern = 'image: (ghcr\.io/mserajnik/vmangos-server:5875|world-of-skatecraft/vmangos-server:\S+)'
+$pattern = 'image: (&\S+ )?(ghcr\.io/mserajnik/vmangos-server:5875|world-of-skatecraft/vmangos-server:\S+)'
 if ($compose -notmatch $pattern) { Stop-Build "no vmangos-server image: line found in $ComposeFile" }
-$updated = [regex]::Replace($compose, $pattern, "image: $Image")
+$updated = [regex]::Replace($compose, $pattern, "image: `${1}$Image")
 if ($updated -ne $compose) { [IO.File]::WriteAllBytes($ComposeFile, $Latin1.GetBytes($updated)) }
 Write-Host "$ComposeFile now runs $Image"
 exit 0

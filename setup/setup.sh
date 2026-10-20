@@ -28,7 +28,7 @@ ENGINE_REV=cb79689
 CONVERTER_URL=https://raw.githubusercontent.com/Kimmo3223/2010-rust-rewrite-mashup/adb684e78ec07654f00e2a9da88d32ae02cc68bd/skate/converter/iw4l_skate_convert.py
 VGMSTREAM_URL=https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-linux.zip
 SERVER_URL=https://github.com/mserajnik/vmangos-deploy
-SERVER_REV=f0692574b7955e78d68fea39372e0045360ce5ee
+SERVER_REV=02c6608fcf350e1a85ebd319e9307bc763db2ba6
 SERVER_IMAGE=ghcr.io/mserajnik/vmangos-server:5875
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -182,16 +182,16 @@ if [ ! -f "$SERVER/compose.yaml" ]; then
     cp "$SERVER/config/mangosd.conf.example" "$SERVER/config/mangosd.conf"
     cp "$SERVER/config/realmd.conf.example" "$SERVER/config/realmd.conf"
     TZ_NAME=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo Etc/UTC)
-    sed -e "s#TZ=Etc/UTC#TZ=${TZ_NAME}#" -e "s#user: 1000:1000#user: $(id -u):$(id -g)#" \
+    sed -e "s#TZ=Etc/UTC#TZ=${TZ_NAME}#" -e "s#VMANGOS_UID=1000#VMANGOS_UID=$(id -u)#" -e "s#VMANGOS_GID=1000#VMANGOS_GID=$(id -g)#" \
         "$SERVER/compose.yaml.example" > "$SERVER/compose.yaml"
 fi
 if [ ! -d "$SERVER/storage/mangosd/extracted-data/maps" ]; then
     step "Extracting server maps from your WoW client (this takes HOURS; leave it running)"
     docker pull --quiet "$SERVER_IMAGE" >/dev/null
-    docker run --rm --user "$(id -u):$(id -g)" \
+    docker run --rm -e VMANGOS_DEPLOY_VERSION=1 -e VMANGOS_UID="$(id -u)" -e VMANGOS_GID="$(id -g)" \
         -v "$(realpath "$ROOT/WoW")":/opt/vmangos/storage/client-data \
-        -v "$SERVER/storage/mangosd/extracted-data":/opt/vmangos/storage/extracted-data \
-        "$SERVER_IMAGE" extract-client-data </dev/null ||
+        -v "$SERVER/storage/mangosd/extracted-data":/opt/vmangos/storage/data \
+        "$SERVER_IMAGE" extract-client-data --force </dev/null ||
         die "map extraction failed (see the lines above)"
 fi
 step "Building the server with the Skateboarding profession (a few minutes)"

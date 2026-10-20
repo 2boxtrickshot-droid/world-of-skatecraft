@@ -29,6 +29,6 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
         --build-arg VMANGOS_FAIL_ON_PATCH_ERROR=1 \
         "$CONTEXT"
 fi
-sed -i -E "s#image: (ghcr\.io/mserajnik/vmangos-server:5875|world-of-skatecraft/vmangos-server:[^[:space:]]+)#image: $IMAGE#" \
+sed -i -E "s#image: (\&[^[:space:]]+ )?(ghcr\.io/mserajnik/vmangos-server:5875|world-of-skatecraft/vmangos-server:[^[:space:]]+)#image: \1$IMAGE#" \
     "$DEPLOY/compose.yaml"
 echo "$DEPLOY/compose.yaml now runs $IMAGE"
