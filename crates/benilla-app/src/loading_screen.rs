@@ -136,6 +136,11 @@ pub(crate) struct LoadingScreen {
     /// residency cannot clear a screen raised for the new one (at world entry the login vista is
     /// resident well before `SMSG_LOGIN_VERIFY_WORLD`).
     awaiting_snap: bool,
+    /// The wait above was raised by the glue→world entry edge, so the destination is the body's
+    /// own ground and a fully resident scene ends the wait even if no snap message ever answers
+    /// ([`Self::release_awaited_entry`]). A transfer raise stays false: its destination is not
+    /// resident yet, and the old world being presentable must not clear its cover.
+    awaiting_entry: bool,
     /// The map this screen's art resolves from, the reference's `[0x82f00c]`, set by every raise;
     /// `None` is its `-1`, no backdrop. Not `CurrentMap`: vmangos can relocate a character inside
     /// `Player::LoadFromDB` (`Player.cpp:15020`), under a live screen. Its writers: `0x4067e6` and
@@ -172,6 +177,12 @@ impl LoadingScreen {
         self.active
     }
 
+    /// Whether the cover is still waiting for its destination, for the stream trace.
+    #[cfg(feature = "dev")]
+    pub(crate) fn awaiting_snap(&self) -> bool {
+        self.awaiting_snap
+    }
+
     /// An active cover, for tests.
     #[cfg(test)]
     pub(crate) fn test_covering() -> Self {
@@ -192,6 +203,7 @@ impl LoadingScreen {
         self.active = true;
         self.blackout = false;
         self.awaiting_snap = false;
+        self.awaiting_entry = false;
         self.map = map;
         self.held = true;
         self.tip_edge = Some(TipEdge::Pick);
@@ -204,6 +216,7 @@ impl LoadingScreen {
         self.active = true;
         self.blackout = false;
         self.awaiting_snap = awaiting_snap;
+        self.awaiting_entry = false;
         self.map = map;
         self.ready_frames = 0;
         self.displayed = 0.0; // restart the fill for the new load
@@ -223,6 +236,20 @@ impl LoadingScreen {
             }
         }
         self.awaiting_snap = false;
+        self.awaiting_entry = false;
+    }
+
+    /// End the glue→world entry's wait when the destination is already every term the clear gate
+    /// asks for. A snap message adds nothing then, so one the server never sent — or one consumed
+    /// before the raise — must not hold the cover forever (a live report: placements resident,
+    /// `awaiting_snap` still true). Returns whether the wait ended.
+    fn release_awaited_entry(&mut self, destination_ready: bool) -> bool {
+        if !(self.awaiting_entry && self.awaiting_snap && destination_ready) {
+            return false;
+        }
+        self.awaiting_snap = false;
+        self.awaiting_entry = false;
+        true
     }
 
     /// A far snap: a screen already up is this snap's own, so the snap only ends its wait. Returns
@@ -242,6 +269,8 @@ impl LoadingScreen {
     fn dismiss(&mut self) {
         self.active = false;
         self.blackout = false;
+        self.awaiting_snap = false;
+        self.awaiting_entry = false;
         self.tip_edge = Some(TipEdge::Clear);
         // `0x407ed7` clears `[0x882e04]`: the next screen resolves its own art.
         self.art_resolved = false;
@@ -462,6 +491,9 @@ fn drive_loading_screen(
     if entered.read().next().is_some() && *state.get() != crate::char_select::ClientState::InWorld {
         let map = roster.as_ref().and_then(|r| r.pending_map());
         screen.raise("world entry", true, map, now);
+        // The one wait a resident destination can end on its own: the body lands on its own
+        // ground, so the scene the clear gate measures *is* the destination.
+        screen.awaiting_entry = true;
         // The tip rides this edge alone: the reference's setter `0x406630` has one caller, in
         // `CGlueMgr::EnterWorld`, which neither `SMSG_TRANSFER_PENDING` arm reaches.
         screen.tip_edge = Some(TipEdge::Pick);
@@ -498,6 +530,7 @@ fn drive_loading_screen(
         screen.active = true;
         screen.blackout = true;
         screen.awaiting_snap = false;
+        screen.awaiting_entry = false;
         screen.ready_frames = 0;
         info!(
             "loading screen: blackout ({})",
@@ -543,6 +576,20 @@ fn drive_loading_screen(
         && !(progress.is_ready() && progress.presentable())
     {
         screen.raise("teleport, destination not presentable", false, map_id, now);
+    }
+
+    // An entry wait the server never answers must not hold the cover once the body stands on a
+    // destination that is wholly resident and presentable: the clear gate could ask for nothing
+    // more. (The reference has no such latch; its world load blocks instead.)
+    let entry_destination_ready = *state.get() == crate::char_select::ClientState::InWorld
+        && !player_settling
+        && progress.is_ready()
+        && progress.presentable();
+    if screen.release_awaited_entry(entry_destination_ready) {
+        info!(
+            "loading screen: entry wait released — destination resident and presentable ({:.1}s)",
+            now - screen.active_since
+        );
     }
 
     // --- Clear, sustained a few frames. ---
@@ -787,5 +834,46 @@ mod tests {
         // The dismiss is the only thing that lets the next screen resolve its own.
         screen.dismiss();
         assert!(!screen.art_resolved);
+    }
+
+    /// A live report: the world entry's destination was wholly resident and presentable, yet
+    /// `awaiting_snap` stayed true and the cover waited on a message the server never sent.
+    #[test]
+    fn a_resident_entry_destination_ends_a_wait_no_snap_answers() {
+        let mut screen = LoadingScreen::default();
+        screen.raise("world entry", true, Some(0), 0.0);
+        screen.awaiting_entry = true;
+
+        assert!(
+            !screen.release_awaited_entry(false),
+            "an unfinished destination must never end the wait"
+        );
+        assert!(screen.awaiting_snap);
+
+        assert!(
+            screen.release_awaited_entry(true),
+            "a destination the clear gate calls presentable ends the entry wait"
+        );
+        assert!(!screen.awaiting_snap, "the clear gate may now run");
+        assert!(
+            !screen.release_awaited_entry(true),
+            "the release is one edge, not a per-frame event"
+        );
+    }
+
+    /// A transfer raise's destination is not resident yet; releasing it on the old world's
+    /// presentable scene would show exactly the load the cover hides.
+    #[test]
+    fn a_transfer_wait_is_not_released_by_the_old_world() {
+        let mut screen = LoadingScreen::default();
+        screen.raise("transfer pending", true, Some(389), 0.0);
+
+        assert!(!screen.release_awaited_entry(true));
+        assert!(
+            screen.awaiting_snap,
+            "only the destination snap or an abort ends a transfer wait"
+        );
+        screen.snap_landed(Some(389));
+        assert!(!screen.awaiting_snap);
     }
 }
