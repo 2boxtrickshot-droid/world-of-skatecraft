@@ -2,7 +2,7 @@
 //! the `AssetServer`, spawns its cells, collider, placements, MCLQ water and ground clutter, and
 //! publishes the residency the loading screen reads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use benilla_assets::coords::{bevy_to_wow, placement_rotation, wow_to_bevy};
@@ -83,6 +83,10 @@ pub struct TerrainStreamer {
     settled: bool,
     /// The off-grid focus tile last warned about, so the warning fires once per tile.
     off_grid_reported: Option<(i32, i32)>,
+    /// ADT tiles whose load failed. A failure never answers again, so the tile is dropped and
+    /// kept out of the wanted set: counting it would hold `ready < total` and `focus_resident`
+    /// false forever, and the loading cover would never clear. Cleared with the map.
+    failed_tiles: HashSet<(i32, i32)>,
 }
 
 /// The map-global WMO's placement id: a WMO-only map has no ADT uniqueIds to collide with, and
@@ -612,6 +616,11 @@ fn stream_terrain(
         state.off_grid_reported = None;
     }
 
+    // A tile whose load failed has no asset to furnish and never will: it is not wanted, so the
+    // residency counts can converge instead of waiting on a hole in the install. (After the
+    // off-grid test above, which is about the WDT's grid, not about load failures.)
+    desired.retain(|c| !state.failed_tiles.contains(c));
+
     // Unload stale tiles, at most `unload_budget` per frame and farthest first, since a whole
     // row's free wave is a frame spike; a cross-map swap is not budgeted, as the cover hides it.
     // Deviation: a tile is released only one chunk past the outer window (`StreamWindow::keeps`),
@@ -696,12 +705,20 @@ fn stream_terrain(
     // Spawn loaded tiles within the frame's budget. The material binds the shared light buffer,
     // so a new tile is lit and fogged on its first frame.
     let tile_deadline = Instant::now() + SPAWN_BUDGET;
+    let mut failed_now: Vec<(i32, i32)> = Vec::new();
     for (&(tx, ty), tile) in state.tiles.iter_mut() {
         if tile.entity.is_some() {
             continue;
         }
         let Some(adt) = tiles.get(&tile.handle) else {
-            continue; // not loaded yet, or missing
+            // A failed load never answers; retire it rather than wait on it for the session.
+            if matches!(
+                asset_server.load_state(&tile.handle),
+                bevy::asset::LoadState::Failed(_)
+            ) {
+                failed_now.push((tx, ty));
+            }
+            continue; // not loaded yet
         };
         let material = materials.add(ExtendedMaterial {
             base: terrain_base_material(),
@@ -785,6 +802,10 @@ fn stream_terrain(
             break;
         }
     }
+
+    // Retire this frame's failed tiles: nothing was spawned for them, and leaving them wanted
+    // would wedge the loading cover on a tile no server can supply.
+    retire_failed_tiles(&mut state, &mut desired, failed_now, &dir);
 
     // Publish residency; the pacing edge is read and advanced once per frame.
     state.settled = stale_empty
@@ -890,6 +911,30 @@ fn stream_terrain(
     activity.stream_ms += t0.elapsed().as_secs_f32() * 1000.0;
 }
 
+/// Retire the tiles whose ADT load failed this frame: drop what the tile owns (nothing draws yet),
+/// remember it so it is not requested again, and take it out of the wanted set. A failed load never
+/// answers, so leaving the tile wanted would hold `ready < total` and `focus_resident` false for
+/// the session — the loading cover would never clear. Returns how many tiles were resident.
+fn retire_failed_tiles(
+    state: &mut TerrainStreamer,
+    desired: &mut Vec<(i32, i32)>,
+    failed: impl IntoIterator<Item = (i32, i32)>,
+    map_dir: &str,
+) -> usize {
+    let mut retired = 0;
+    for c in failed {
+        if state.tiles.remove(&c).is_some() {
+            retired += 1;
+        }
+        state.failed_tiles.insert(c);
+        desired.retain(|&t| t != c);
+        warn!(
+            "terrain: {map_dir} tile {c:?} failed to load — retired, the world streams without it"
+        );
+    }
+    retired
+}
+
 /// `WOW_NO_TILE_DROP=1`: never release stale tiles, so a crossing only adds (dev-only).
 fn tile_drop_disabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -990,6 +1035,8 @@ fn drop_streamed_world(
         gx.clear();
     }
     crate::static_merge::reset();
+    // A new map's tile of the same coordinates may exist even where the old map's did not.
+    state.failed_tiles.clear();
 }
 
 /// Expire the placement material dedup by distance, the within-map half of
@@ -1418,5 +1465,60 @@ mod straddler_tests {
         assert!(!p8.spawned);
         assert!(world.get_entity(e1).is_ok());
         assert!(world.get_entity(e2).is_err());
+    }
+}
+
+#[cfg(test)]
+mod failed_tile_tests {
+    use super::*;
+
+    fn tile() -> TileState {
+        TileState {
+            handle: Default::default(),
+            entity: None,
+            material: None,
+            next_cell: 0,
+            furnished: false,
+            placements: Vec::new(),
+            liquid: Vec::new(),
+            wall: None,
+            clutter: Vec::new(),
+            welds: Vec::new(),
+            merged: Vec::new(),
+        }
+    }
+
+    /// A failed ADT never answers again; leaving it wanted holds `ready < total` and
+    /// `focus_resident` false for the session, and the cover waits on it forever.
+    #[test]
+    fn a_failed_tile_leaves_the_wanted_set_for_good() {
+        let mut state = TerrainStreamer::default();
+        state.tiles.insert((3, 4), tile());
+        state.tiles.insert((3, 5), tile());
+        let mut desired = vec![(3, 4), (3, 5)];
+
+        assert_eq!(
+            retire_failed_tiles(&mut state, &mut desired, [(3, 4)], "Azeroth"),
+            1
+        );
+        assert!(
+            !state.tiles.contains_key(&(3, 4)),
+            "the failed tile is dropped"
+        );
+        assert!(
+            state.failed_tiles.contains(&(3, 4)),
+            "and remembered, so it is not re-requested every frame"
+        );
+        assert_eq!(
+            desired,
+            vec![(3, 5)],
+            "the residency counts describe tiles that can answer"
+        );
+
+        // A second report of the same failure is not a second tile.
+        assert_eq!(
+            retire_failed_tiles(&mut state, &mut desired, [(3, 4)], "Azeroth"),
+            0
+        );
     }
 }
