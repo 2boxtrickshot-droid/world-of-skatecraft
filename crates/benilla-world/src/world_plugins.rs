@@ -16,6 +16,8 @@ impl PluginGroup for WorldPlugins {
             // The engine's WGSL first: every material below specializes against it, and an
             // unregistered shader fails silently.
             .add(crate::shaders::plugin)
+            // The GPU banner and the device-lost report, armed on the render world's first frame.
+            .add(crate::device_lost::DeviceLostPlugin)
             .add(MaterialPlugin::<TerrainMaterial>::default())
             .add(MaterialPlugin::<WowModelMaterial>::default())
             // Physics (avian3d): colliders, their BVH and the shape-casts of controller and picker.

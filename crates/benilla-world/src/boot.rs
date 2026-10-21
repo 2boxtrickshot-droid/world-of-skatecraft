@@ -69,4 +69,57 @@ pub fn tuned_default_plugins(primary_window: Window) -> PluginGroupBuilder {
         .disable::<bevy::anti_alias::AntiAliasPlugin>()
         // No gamepad input; 1.12's bindings are keyboard/mouse.
         .disable::<bevy::gilrs::GilrsPlugin>()
+        // The backend and memory levers ([`wgpu_settings`]); unset, Bevy's own defaults stand.
+        .set(bevy::render::RenderPlugin {
+            render_creation: wgpu_settings().into(),
+            ..default()
+        })
+}
+
+/// This run's wgpu settings: Bevy's defaults plus the diagnostic knobs below. An unset knob
+/// changes nothing (Bevy's default already honours `WGPU_BACKEND`), so a player's machine runs
+/// exactly what it ran before. Read once, before the renderer builds.
+pub fn wgpu_settings() -> bevy::render::settings::WgpuSettings {
+    use bevy::render::settings::{Backends, MemoryHints, WgpuSettings, WgpuSettingsPriority};
+
+    let mut settings = WgpuSettings::default();
+    // `WOW_BACKEND=dx12|vulkan|metal|gl|all`: pin this run's backends. A GPU whose driver drops
+    // the device on the backend wgpu picks by default (a DX12 removal, `0x887A0005`) can be
+    // tested on another one without a rebuild; `gl` also needs the `gles` cargo feature and, on
+    // Windows/macOS, ANGLE.
+    if let Ok(value) = std::env::var("WOW_BACKEND") {
+        let backends = match value.trim().to_ascii_lowercase().as_str() {
+            "dx12" | "d3d12" => Some(Backends::DX12),
+            "vulkan" | "vk" => Some(Backends::VULKAN),
+            "metal" => Some(Backends::METAL),
+            "gl" | "gles" | "opengl" => Some(Backends::GL),
+            "all" => Some(Backends::all()),
+            _ => None,
+        };
+        match backends {
+            Some(backends) => {
+                info!("gpu: backend pinned to {value} ({backends:?})");
+                settings.backends = Some(backends);
+            }
+            None => warn!(
+                "WOW_BACKEND={value} is not dx12/vulkan/metal/gl/all — leaving the backend to wgpu"
+            ),
+        }
+    }
+    // An integrated GPU's memory is system RAM: pack suballocations instead of reserving for
+    // peak bandwidth. A memory-pressure lever, never a saved setting.
+    if matches!(
+        std::env::var("WOW_GPU_MEMORY").ok().as_deref(),
+        Some("low") | Some("usage")
+    ) {
+        info!("gpu: WOW_GPU_MEMORY=low — wgpu allocates for memory use, not peak bandwidth");
+        settings.memory_hints = MemoryHints::MemoryUsage;
+    }
+    // Request the WebGPU-default feature set and limits instead of every optional feature the
+    // driver advertises: the old-driver path, where an advertised feature is the suspect.
+    if std::env::var("WOW_GPU_COMPAT").as_deref() == Ok("1") {
+        info!("gpu: WOW_GPU_COMPAT=1 — requesting WebGPU-default features and limits");
+        settings.priority = WgpuSettingsPriority::Compatibility;
+    }
+    settings
 }
