@@ -235,6 +235,7 @@ impl AssetLoader for M2ModelLoader {
         _settings: &(),
         ctx: &mut LoadContext<'_>,
     ) -> Result<M2Model, Self::Error> {
+        let t0 = crate::timing::start();
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
@@ -648,6 +649,7 @@ impl AssetLoader for M2ModelLoader {
             .get(0x10..0x14)
             .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
 
+        crate::timing::log("m2", &ctx.path().to_string(), t0);
         Ok(M2Model {
             submeshes,
             bounds,

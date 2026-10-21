@@ -140,6 +140,7 @@ impl AssetLoader for AdtLoader {
         _settings: &(),
         ctx: &mut LoadContext<'_>,
     ) -> Result<AdtTile, Self::Error> {
+        let t0 = crate::timing::start();
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
@@ -228,6 +229,7 @@ impl AssetLoader for AdtLoader {
         let alpha_array = alpha_array_image(ALPHA_MAP_SIZE, alpha_count, alpha_buf);
         let shadow_array = shadow_array_image(SHADOW_MAP_SIZE, shadow_count, shadow_buf);
 
+        crate::timing::log("adt", &ctx.path().to_string(), t0);
         Ok(AdtTile {
             shading,
             layer_array: ctx.add_labeled_asset("layer_array".to_string(), layer_array),

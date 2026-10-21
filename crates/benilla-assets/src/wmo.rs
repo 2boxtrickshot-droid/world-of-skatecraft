@@ -365,6 +365,7 @@ impl AssetLoader for WmoModelLoader {
         _settings: &(),
         ctx: &mut LoadContext<'_>,
     ) -> Result<WmoModel, Self::Error> {
+        let t0 = crate::timing::start();
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
@@ -542,6 +543,7 @@ impl AssetLoader for WmoModelLoader {
         let group_footprint_bounds = footprint_tri_bounds(&group_footprints);
         let group_collision_grids = collision_tri_grids(&group_collision_tris);
         let group_footprint_grids = footprint_tri_grids(&group_footprints);
+        crate::timing::log("wmo", &ctx.path().to_string(), t0);
         Ok(WmoModel {
             wmo_id: benilla_formats::wmo_root_id(&bytes),
             submeshes,

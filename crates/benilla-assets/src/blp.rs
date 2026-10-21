@@ -54,10 +54,11 @@ impl AssetLoader for BlpImageLoader {
         settings: &Self::Settings,
         ctx: &mut LoadContext<'_>,
     ) -> Result<Image, Self::Error> {
+        let t0 = crate::timing::start();
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let to_io = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
-        Ok(match settings.variant {
+        let image = match settings.variant {
             BlpVariant::WorldArt => world_art_image(
                 for_upload(blp_bytes_to_native_chain(&bytes).map_err(to_io)?),
                 // The address mode rides the asset path (`crate::texture_url`): one `.blp` can be
@@ -83,7 +84,9 @@ impl AssetLoader for BlpImageLoader {
                 let (w, h, rgba) = blp_to_rgba(&bytes).map_err(to_io)?;
                 cursor_image(w, h, rgba)
             }
-        })
+        };
+        crate::timing::log("blp", &ctx.path().to_string(), t0);
+        Ok(image)
     }
 
     fn extensions(&self) -> &[&str] {

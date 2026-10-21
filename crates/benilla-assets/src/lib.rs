@@ -18,6 +18,7 @@ pub mod coords;
 pub mod materials;
 pub mod minimap_grid;
 mod spatial_cache;
+mod timing;
 pub mod trace;
 
 mod anim_rng;
