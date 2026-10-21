@@ -32,7 +32,10 @@ const STREAM_TRACE_HEADER: &str = "frame,t,delta_ms,cpu_ms,ents,stream_ms,furnis
                                    spawn_ms,collider_ms,tiles_dropped,pl_dropped,pl_ents_dropped,\
                                    tiles_req,tiles_spawned,cells_spawned,mmeshes_built,pl_spawned,\
                                    attached,adt_freed,meshes_freed,images_freed,adt_added,\
-                                   meshes_added,images_added,pipes_new,pipes_pending\n";
+                                   meshes_added,images_added,pipes_new,pipes_pending,\
+                                   tiles_ready,tiles_total,pl_pending,col_pending,merge_pending,\
+                                   gx_pending,focus_resident,scene_ready,presentable,loading,\
+                                   snap_wait\n";
 
 pub(super) fn trace_stream(
     mut trace: ResMut<StreamTrace>,
@@ -43,6 +46,8 @@ pub(super) fn trace_stream(
     mut mesh_events: MessageReader<bevy::asset::AssetEvent<Mesh>>,
     mut image_events: MessageReader<bevy::asset::AssetEvent<bevy::image::Image>>,
     pipes: Res<crate::pipe_warm::PipeWatch>,
+    progress: Option<Res<benilla_world::terrain_stream::WorldLoadProgress>>,
+    screen: Option<Res<crate::loading_screen::LoadingScreen>>,
 ) {
     // Taken every frame, tracing or not: the counters are per-frame by contract.
     let a = std::mem::take(&mut *activity);
@@ -81,6 +86,23 @@ pub(super) fn trace_stream(
     let (added_mesh, removed_mesh) = count_events(&mut mesh_events);
     let (added_img, removed_img) = count_events(&mut image_events);
     let delta_ms = time.delta_secs() * 1000.0;
+    let (tiles_ready, tiles_total, pl_pending, col_pending, merge_pending, gx_pending) =
+        progress.as_ref().map_or((0, 0, 0, 0, 0, 0), |p| {
+            (
+                p.ready,
+                p.total,
+                p.placements_pending,
+                p.colliders_pending,
+                p.merge_pending,
+                p.gx_pending,
+            )
+        });
+    let (focus_resident, scene_ready, presentable) =
+        progress.as_ref().map_or((false, false, false), |p| {
+            (p.focus_resident, p.scene_ready, p.presentable())
+        });
+    let loading = screen.as_ref().is_some_and(|s| s.covering());
+    let snap_wait = screen.as_ref().is_some_and(|s| s.awaiting_snap());
     if a.any_event() || removed_adt > 0 || added_adt > 0 || pipes_new > 0 {
         trace.log_until = trace.frame + TRACE_TAIL_FRAMES;
     }
@@ -97,7 +119,7 @@ pub(super) fn trace_stream(
         let _ = std::fs::write(&trace.path, STREAM_TRACE_HEADER);
     }
     let line = format!(
-        "{},{:.2},{delta_ms:.2},{cpu_ms},{},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{removed_adt},{removed_mesh},{removed_img},{added_adt},{added_mesh},{added_img},{pipes_new},{pipes_pending}\n",
+        "{},{:.2},{delta_ms:.2},{cpu_ms},{},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{removed_adt},{removed_mesh},{removed_img},{added_adt},{added_mesh},{added_img},{pipes_new},{pipes_pending},{tiles_ready},{tiles_total},{pl_pending},{col_pending},{merge_pending},{gx_pending},{},{},{},{},{}\n",
         trace.frame,
         time.elapsed_secs(),
         entities.iter().len(),
@@ -115,6 +137,11 @@ pub(super) fn trace_stream(
         a.model_meshes_built,
         a.placements_spawned,
         a.colliders_attached,
+        u8::from(focus_resident),
+        u8::from(scene_ready),
+        u8::from(presentable),
+        u8::from(loading),
+        u8::from(snap_wait),
     );
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
