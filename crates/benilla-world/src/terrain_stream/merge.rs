@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::NoAutoAabb;
@@ -44,6 +45,12 @@ const RECONSOLIDATE_IDLE_FRAMES: u32 = 180;
 /// Frames a replaced fragment keeps drawing while its successor's mesh uploads: the overlap is
 /// invisible on order-free batches, where a gap would flicker the cell off.
 const RETIRE_FRAMES: u32 = 10;
+
+/// Wall clock per flush for closing accumulators. A burst of placements closed together is a bake
+/// of millions of vertices and their mesh uploads on the main thread; a budget leaves the rest to
+/// the next frame, and `merge_pending` keeps the loading cover up until they are all baked, so
+/// nothing is drawn half-merged.
+const FLUSH_BUDGET: Duration = Duration::from_millis(4);
 
 /// The doodad spatial cell, ¼ of an ADT tile (133⅓ yd), so a blob's bound stays local enough for
 /// the frustum cull.
@@ -313,6 +320,7 @@ pub(super) fn flush_static_merge(
     let frame = merge.frame;
     let idle = if focus.paced { MERGE_IDLE_FRAMES } else { 1 };
     let mut blobs = 0u64;
+    let deadline = Instant::now() + FLUSH_BUDGET;
     {
         let StaticMerge {
             doodads, settled, ..
@@ -322,6 +330,10 @@ pub(super) fn flush_static_merge(
                 return false;
             };
             if !acc.ready(frame, idle) {
+                return true;
+            }
+            // A bake past the budget waits for the next frame; the cover reads `merge_pending`.
+            if Instant::now() >= deadline {
                 return true;
             }
             blobs += 1;
@@ -352,6 +364,9 @@ pub(super) fn flush_static_merge(
             return false;
         };
         if !acc.ready(frame, idle) {
+            return true;
+        }
+        if Instant::now() >= deadline {
             return true;
         }
         blobs += 1;

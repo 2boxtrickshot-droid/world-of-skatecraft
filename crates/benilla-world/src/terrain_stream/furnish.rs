@@ -3,7 +3,7 @@
 //! tile line never uploads a whole row in one frame. While the body is not live (entry, teleport)
 //! the cap is off: the loading screen absorbs the burst and waits on furnished tiles.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use benilla_assets::{chunks_to_mesh, AdtTile};
 use bevy::camera::primitives::MeshAabb;
@@ -14,6 +14,12 @@ use super::TerrainStreamer;
 /// Chunks furnished per frame while live (four cells): a chunk's mesh costs ~70 µs from asset add
 /// to upload, so ~4.5 ms a frame.
 const CELL_SPAWN_CAP: usize = 64;
+
+/// Wall clock per frame for cell meshes behind the loading cover. The count cap is off there so
+/// the reveal is short, but a cold ring's thousand-odd cells built in one frame is a multi-second
+/// main-thread freeze — and on DX12 a GPU idle long enough to trip the driver's TDR. A bounded
+/// frame costs a few more covered frames and keeps every one of them presentable.
+const ENTRY_FURNISH_BUDGET: Duration = Duration::from_millis(6);
 
 /// A tile's 16×16 chunks furnish as 4×4 cells of 4×4 chunks, one mesh and one draw each: every
 /// per-chunk fact is baked per vertex and the material is the tile's. The 133⅓-yd cell matches
@@ -40,6 +46,9 @@ pub(super) fn furnish_tile_cells(
     } else {
         usize::MAX
     };
+    // Behind the cover the count is uncapped but the wall clock is not: a cold ring must not
+    // build every cell mesh in one frame.
+    let deadline = (!live).then(|| Instant::now() + ENTRY_FURNISH_BUDGET);
     // `WOW_NO_TILE_CELLS=1`: tiles stream without cell entities, but still mark furnished so the
     // loading screen converges.
     let ablated = tile_cells_disabled();
@@ -107,6 +116,9 @@ pub(super) fn furnish_tile_cells(
                 }
             });
             built += 1;
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                break 'tiles;
+            }
         }
         tile.furnished = true;
     }

@@ -10,14 +10,14 @@ use fx::{
     emitter_fade, spawn_emitters_for, spawn_lights_for, spawn_ribbons_for, spawn_wmo_lights_for,
 };
 
-use std::sync::Arc;
-use std::time::Instant;
-
 use benilla_assets::coords::{wmo_doodad_local, wow_to_bevy};
 use benilla_assets::{AdtTile, DoodadBase, M2Model, WmoModel};
 use benilla_formats::{world_to_tile, M2Bounds};
 use bevy::camera::primitives::Aabb;
 use bevy::prelude::*;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 
 use crate::collision::{camera_layers, walk_layers, GroundDecalSurface, PickOccluder};
 use crate::doodad_anim::wants_rig;
@@ -39,13 +39,19 @@ use super::collider::{
 use super::merge::{MergeSite, StaticMerge};
 use super::weld::{hull_weld_disabled, HullWelds};
 use super::{
-    doodad_ground_shade, ModelHandle, Placements, ShadeResolve, TerrainStreamer, SPAWN_BUDGET,
+    doodad_ground_shade, ModelHandle, Placement, Placements, ShadeResolve, TerrainStreamer,
+    SPAWN_BUDGET,
 };
 use prop_light::{fold_interior_probe, PropLight, PropLobeLight, WmoDoodadInst};
 
 /// Placements (models or WMO props) spawned per frame once paced: ~150 × ~50 µs of downstream
 /// cost each is about half a 60 Hz frame of render work.
 const SPAWN_COUNT_CAP: usize = 150;
+
+/// Placements spawned per frame behind the loading cover. The wall-clock budget alone still lets
+/// one frame queue thousands of entities for the render world's first extraction, so the cover's
+/// frames are bounded in count too; the burst just takes a handful more covered frames.
+const ENTRY_SPAWN_COUNT_CAP: usize = 512;
 
 /// The nested resources of [`spawn_loaded_placements`], under Bevy's 16-parameter limit.
 type SpawnTables<'w> = (
@@ -127,12 +133,12 @@ pub(super) fn spawn_loaded_placements(
     let placements = placements.into_inner();
     retire_failed_placements(placements, &asset_server);
     let t0 = Instant::now();
-    // The count cap bounds the render-side wave a time budget misses; off until the focus is
-    // paced, as the loading cover absorbs the burst and a cap would only lengthen the reveal.
+    // The count cap bounds the render-side wave a time budget misses; a smaller one behind the
+    // cover keeps the burst incremental instead of uncapped.
     let count_cap = if focus.paced {
         SPAWN_COUNT_CAP
     } else {
-        usize::MAX
+        ENTRY_SPAWN_COUNT_CAP
     };
     let mut spawned_n = 0usize;
     // The anim clock origin: each instance's phase is its spawn time, as in the reference.
@@ -149,7 +155,16 @@ pub(super) fn spawn_loaded_placements(
     // follows the work, so every frame spawns at least one.
     let deadline = Instant::now() + SPAWN_BUDGET;
 
-    'placements: for (&unique_id, p) in by_id.iter_mut() {
+    // Nearest first: the budget must buy the placements the player can see, and `by_id` is a
+    // HashMap whose order is arbitrary — a cold entry would otherwise spawn a random slice of the
+    // ring while the screen is still up. Once settled `pending_spawns == 0` returns above, so this
+    // is not a per-frame cost in play.
+    let order = spawn_order(by_id, &streamer);
+
+    'placements: for unique_id in order {
+        let Some(p) = by_id.get_mut(&unique_id) else {
+            continue;
+        };
         // 1. The model's own geometry, once; a WMO also resolves its doodad props for step 2.
         if !p.spawned {
             let entities = match &p.model {
@@ -875,6 +890,18 @@ fn placement_priority(streamer: &TerrainStreamer, translation: Vec3) -> i32 {
     16 + d * 16
 }
 
+/// The order placements spawn in: nearest tile first, so a frame's budget buys what the player can
+/// see. `by_id` is a HashMap, whose arbitrary order must not decide; the key is
+/// [`placement_priority`], the same distance the model-form furnisher orders by.
+fn spawn_order(by_id: &HashMap<u32, Placement>, streamer: &TerrainStreamer) -> Vec<u32> {
+    let mut order: Vec<(i32, u32)> = by_id
+        .iter()
+        .map(|(&id, p)| (placement_priority(streamer, p.transform.translation), id))
+        .collect();
+    order.sort_unstable_by_key(|&(priority, _)| priority);
+    order.into_iter().map(|(_, id)| id).collect()
+}
+
 fn handle_label<A: Asset>(handle: &Handle<A>) -> String {
     handle
         .path()
@@ -1020,5 +1047,26 @@ mod retire_tests {
         let pl = app.world().resource::<Placements>();
         assert!(pl.by_id[&1].doodads[0].spawned);
         assert_eq!(pl.pending_spawns, 0);
+    }
+
+    /// The frame budget must buy the placements nearest the focus: a cold entry queues thousands,
+    /// and a HashMap's order would spend it on an arbitrary slice of the ring.
+    #[test]
+    fn placements_spawn_nearest_first() {
+        let mut streamer = TerrainStreamer::default();
+        streamer.focus = (0, 0);
+        let near = placement(ModelHandle::M2(Handle::default()), Vec::new());
+        let mut far = placement(ModelHandle::M2(Handle::default()), Vec::new());
+        far.transform.translation =
+            benilla_assets::coords::wow_to_bevy([5.0 * benilla_formats::CHUNK_SIZE, 0.0, 0.0]);
+        let mut by_id = std::collections::HashMap::new();
+        by_id.insert(20u32, far);
+        by_id.insert(10u32, near);
+
+        assert_eq!(
+            spawn_order(&by_id, &streamer),
+            vec![10, 20],
+            "nearer tile first, whatever the map's iteration order"
+        );
     }
 }
