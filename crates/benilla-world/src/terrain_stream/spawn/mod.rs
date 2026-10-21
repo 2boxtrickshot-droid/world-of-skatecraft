@@ -1053,8 +1053,10 @@ mod retire_tests {
     /// and a HashMap's order would spend it on an arbitrary slice of the ring.
     #[test]
     fn placements_spawn_nearest_first() {
-        let mut streamer = TerrainStreamer::default();
-        streamer.focus = (0, 0);
+        let streamer = TerrainStreamer {
+            focus: (0, 0),
+            ..Default::default()
+        };
         let near = placement(ModelHandle::M2(Handle::default()), Vec::new());
         let mut far = placement(ModelHandle::M2(Handle::default()), Vec::new());
         far.transform.translation =

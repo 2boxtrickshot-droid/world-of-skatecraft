@@ -18,7 +18,11 @@ impl Plugin for DeviceLostPlugin {
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
-        render_app.add_systems(Render, (install, report_memory));
+        if memory_report_interval().is_some() {
+            render_app.add_systems(Render, (install, report_memory));
+        } else {
+            render_app.add_systems(Render, install);
+        }
     }
 }
 
@@ -26,11 +30,14 @@ impl Plugin for DeviceLostPlugin {
 /// memory-pressure device loss (the DX12 `0x887A0005` hypothesis) has to be argued from. Off by
 /// default: the report walks every allocation.
 fn memory_report_interval() -> Option<Duration> {
-    std::env::var("WOW_GPU_MEM")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .filter(|s| *s > 0.0)
-        .map(Duration::from_secs_f32)
+    static EVERY: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *EVERY.get_or_init(|| {
+        std::env::var("WOW_GPU_MEM")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|s| *s > 0.0)
+            .map(Duration::from_secs_f32)
+    })
 }
 
 fn log_memory(device: &RenderDevice) {
